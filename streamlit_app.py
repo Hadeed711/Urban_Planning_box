@@ -59,10 +59,27 @@ def initialize_earth_engine():
             # Running locally
             st.info("🏠 Running in local environment")
             SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
-            KEY_FILE = 'service_account.json'
             
-            if not os.path.exists(KEY_FILE):
-                st.error(f"❌ Service account file not found: {KEY_FILE}")
+            # Try multiple possible paths for the service account file
+            possible_paths = [
+                'service_account.json',
+                './service_account.json',
+                os.path.join(os.path.dirname(__file__), 'service_account.json'),
+                os.path.join(os.getcwd(), 'service_account.json')
+            ]
+            
+            KEY_FILE = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    KEY_FILE = path
+                    st.info(f"✅ Found service account file at: {path}")
+                    break
+            
+            if not KEY_FILE:
+                st.error("❌ Service account file not found in any of these locations:")
+                for path in possible_paths:
+                    st.error(f"   - {os.path.abspath(path)}")
+                st.error("💡 **Fix**: Make sure service_account.json is in your project directory")
                 return False
                 
             credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
