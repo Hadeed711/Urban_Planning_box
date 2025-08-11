@@ -14,11 +14,33 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize Earth Engine (you may need to authenticate first)
+# Initialize Earth Engine with service account authentication
 try:
-    ee.Initialize(project='notional-gist-467013-r5')
-except:
-    st.error("Please authenticate with Google Earth Engine first")
+    # Check if running on Streamlit Cloud (secrets available)
+    if hasattr(st, 'secrets') and 'GCP_SERVICE_ACCOUNT' in st.secrets:
+        # Production: Use secrets from Streamlit Cloud
+        import json
+        
+        service_account_info = json.loads(st.secrets['GCP_SERVICE_ACCOUNT'])
+        credentials = ee.ServiceAccountCredentials(None, key_data=service_account_info)
+        ee.Initialize(credentials)
+        st.success("✅ Earth Engine initialized with service account (Cloud)")
+    else:
+        # Local development: Try service account file first, then regular auth
+        try:
+            SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
+            KEY_FILE = 'service_account.json'
+            
+            credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
+            ee.Initialize(credentials)
+            st.success("✅ Earth Engine initialized with service account (Local)")
+        except:
+            # Fallback to regular authentication for local development
+            ee.Initialize(project='notional-gist-467013-r5')
+            st.info("ℹ️ Earth Engine initialized with regular authentication")
+except Exception as e:
+    st.error(f"❌ Earth Engine initialization failed: {str(e)}")
+    st.error("Please ensure your Google Earth Engine credentials are properly configured")
     st.stop()
 
 # Define interventions with Pakistani costs (PKR)
