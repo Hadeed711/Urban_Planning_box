@@ -1,0 +1,17 @@
+# Core Streamlit packages
+streamlit>=1.28.0
+streamlit-folium>=0.13.0
+
+# Data processing and analysis
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Visualization
+plotly>=5.15.0
+folium>=0.14.0
+
+# Google Earth Engine
+earthengine-api>=0.1.350
+
+# Additional utilities
+kaleido>=0.2.1
