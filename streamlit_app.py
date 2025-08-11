@@ -2,6 +2,7 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import ee
+import os
 import json
 import pandas as pd
 import plotly.express as px
@@ -16,31 +17,30 @@ st.set_page_config(
 
 # Initialize Earth Engine with service account authentication
 try:
-    # Check if running on Streamlit Cloud (secrets available)
-    if hasattr(st, 'secrets') and 'GCP_SERVICE_ACCOUNT' in st.secrets:
-        # Production: Use secrets from Streamlit Cloud
-        import json
-        
-        service_account_info = json.loads(st.secrets['GCP_SERVICE_ACCOUNT'])
-        credentials = ee.ServiceAccountCredentials(None, key_data=service_account_info)
+    if 'GCP_SERVICE_ACCOUNT' in st.secrets:
+        # Running in Streamlit Cloud
+        key_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+        SERVICE_ACCOUNT = key_dict["client_email"]
+
+        # Save to a temporary file
+        key_path = "/tmp/service_account.json"
+        with open(key_path, "w") as f:
+            json.dump(key_dict, f)
+
+        credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_path)
         ee.Initialize(credentials)
-        st.success("✅ Earth Engine initialized with service account (Cloud)")
+        st.success("✅ Earth Engine initialized (Streamlit Cloud)")
+
     else:
-        # Local development: Try service account file first, then regular auth
-        try:
-            SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
-            KEY_FILE = 'service_account.json'
-            
-            credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
-            ee.Initialize(credentials)
-            st.success("✅ Earth Engine initialized with service account (Local)")
-        except:
-            # Fallback to regular authentication for local development
-            ee.Initialize(project='notional-gist-467013-r5')
-            st.info("ℹ️ Earth Engine initialized with regular authentication")
+        # Running locally
+        SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
+        KEY_FILE = 'service_account.json'
+        credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
+        ee.Initialize(credentials)
+        st.success("✅ Earth Engine initialized (Local)")
+
 except Exception as e:
     st.error(f"❌ Earth Engine initialization failed: {str(e)}")
-    st.error("Please ensure your Google Earth Engine credentials are properly configured")
     st.stop()
 
 # Define interventions with Pakistani costs (PKR)
