@@ -16,31 +16,77 @@ st.set_page_config(
 )
 
 # Initialize Earth Engine with service account authentication
-try:
-    if 'GCP_SERVICE_ACCOUNT' in st.secrets:
-        # Running in Streamlit Cloud
-        key_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
-        SERVICE_ACCOUNT = key_dict["client_email"]
+def initialize_earth_engine():
+    """Initialize Earth Engine with proper error handling"""
+    try:
+        if 'GCP_SERVICE_ACCOUNT' in st.secrets:
+            # Running in Streamlit Cloud
+            st.info("🔄 Attempting to connect to Google Earth Engine...")
+            
+            # Handle the JSON string from secrets properly
+            gcp_service_account = st.secrets["GCP_SERVICE_ACCOUNT"]
+            
+            # Method 1: If it's already a dict (new Streamlit behavior)
+            if isinstance(gcp_service_account, dict):
+                key_dict = gcp_service_account
+                st.info("✅ Service account loaded as dictionary")
+            else:
+                # Method 2: If it's a string, parse it as JSON
+                try:
+                    key_dict = json.loads(gcp_service_account)
+                    st.info("✅ Service account parsed from JSON string")
+                except json.JSONDecodeError as je:
+                    st.error(f"❌ JSON parsing error: {str(je)}")
+                    st.error("💡 **Fix**: Check that your GCP_SERVICE_ACCOUNT secret is valid JSON")
+                    return False
+            
+            SERVICE_ACCOUNT = key_dict["client_email"]
+            st.info(f"📧 Using service account: {SERVICE_ACCOUNT}")
 
-        # Save to a temporary file
-        key_path = "/tmp/service_account.json"
-        with open(key_path, "w") as f:
-            json.dump(key_dict, f)
+            # Save to a temporary file
+            key_path = "/tmp/service_account.json"
+            with open(key_path, "w") as f:
+                json.dump(key_dict, f)
 
-        credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_path)
-        ee.Initialize(credentials)
-        st.success("✅ Earth Engine initialized (Streamlit Cloud)")
+            credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_path)
+            ee.Initialize(credentials)
+            st.success("✅ Earth Engine initialized (Streamlit Cloud)")
+            return True
 
-    else:
-        # Running locally
-        SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
-        KEY_FILE = 'service_account.json'
-        credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
-        ee.Initialize(credentials)
-        st.success("✅ Earth Engine initialized (Local)")
+        else:
+            # Running locally
+            st.info("🏠 Running in local environment")
+            SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
+            KEY_FILE = 'service_account.json'
+            
+            if not os.path.exists(KEY_FILE):
+                st.error(f"❌ Service account file not found: {KEY_FILE}")
+                return False
+                
+            credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
+            ee.Initialize(credentials)
+            st.success("✅ Earth Engine initialized (Local)")
+            return True
 
-except Exception as e:
-    st.error(f"❌ Earth Engine initialization failed: {str(e)}")
+    except FileNotFoundError as fe:
+        st.error(f"❌ File not found: {str(fe)}")
+        st.error("💡 **Fix**: Ensure service_account.json exists in your project directory")
+        return False
+    except ee.EEException as ee_error:
+        st.error(f"❌ Earth Engine error: {str(ee_error)}")
+        st.error("💡 **Fix**: Check that your service account is registered with Earth Engine")
+        return False
+    except Exception as e:
+        st.error(f"❌ Earth Engine initialization failed: {str(e)}")
+        st.error("💡 **Troubleshooting Tips:**")
+        st.error("1. Check that GCP_SERVICE_ACCOUNT is properly set in Streamlit Cloud secrets")
+        st.error("2. Ensure the JSON is properly formatted (no extra quotes or escaping)")
+        st.error("3. Verify the service account has Earth Engine permissions")
+        st.error("4. Try refreshing the page or redeploying the app")
+        return False
+
+# Initialize Earth Engine
+if not initialize_earth_engine():
     st.stop()
 
 # Define interventions with Pakistani costs (PKR)
