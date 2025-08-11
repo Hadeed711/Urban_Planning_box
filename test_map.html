@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Temperature Hotspot Map Test</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+</head>
+<body>
+    <h1>🏙️ Faisalabad Heat Island Test Map</h1>
+    <div id="map" style="height: 600px; width: 100%;"></div>
+    
+    <div style="margin: 20px; padding: 15px; border: 1px solid #ccc;">
+        <h3>🎨 Temperature Categories:</h3>
+        <p>🔴 <strong>Red Circles:</strong> Extreme Heat (40°C+) - 3 hotspots</p>
+        <p>🟠 <strong>Orange Circles:</strong> High Heat (35-40°C) - 3 hotspots</p>
+        <p>🟡 <strong>Yellow Circles:</strong> Moderate Heat (30-35°C) - 3 hotspots</p>
+    </div>
+
+    <script>
+        // Initialize map centered on Faisalabad
+        var map = L.map('map').setView([31.456, 73.095], 12);
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Hotspot data with temperature categories
+        var hotspots = [
+            // RED CIRCLES - Extreme Heat (40°C+)
+            {id: 1, temp: 42.5, location: "Industrial Area", lat: 31.465, lng: 73.085, color: "red"},
+            {id: 2, temp: 43.2, location: "Dense Residential", lat: 31.470, lng: 73.090, color: "red"},
+            {id: 3, temp: 44.1, location: "Market Area", lat: 31.450, lng: 73.100, color: "red"},
+            
+            // ORANGE CIRCLES - High Heat (35-40°C)
+            {id: 4, temp: 38.8, location: "Commercial District", lat: 31.460, lng: 73.092, color: "orange"},
+            {id: 5, temp: 37.2, location: "Mixed Development", lat: 31.468, lng: 73.088, color: "orange"},
+            {id: 6, temp: 39.5, location: "Transport Hub", lat: 31.455, lng: 73.095, color: "orange"},
+            
+            // YELLOW CIRCLES - Moderate Heat (30-35°C)
+            {id: 7, temp: 33.1, location: "Suburban Area", lat: 31.472, lng: 73.082, color: "yellow"},
+            {id: 8, temp: 34.7, location: "Educational District", lat: 31.458, lng: 73.098, color: "yellow"},
+            {id: 9, temp: 32.4, location: "Green Belt Edge", lat: 31.463, lng: 73.105, color: "yellow"}
+        ];
+
+        // Add hotspot markers
+        hotspots.forEach(function(hotspot) {
+            var radius = hotspot.temp >= 40 ? 15 : (hotspot.temp >= 35 ? 12 : 10);
+            
+            var circle = L.circleMarker([hotspot.lat, hotspot.lng], {
+                color: hotspot.color === 'red' ? 'darkred' : (hotspot.color === 'orange' ? 'darkorange' : 'gold'),
+                fillColor: hotspot.color,
+                fillOpacity: 0.8,
+                radius: radius,
+                weight: 3
+            }).addTo(map);
+            
+            circle.bindPopup(`
+                <b>🔥 Hotspot ${hotspot.id}: ${hotspot.location}</b><br>
+                🌡️ Temperature: ${hotspot.temp}°C<br>
+                📍 Coordinates: ${hotspot.lat}, ${hotspot.lng}
+            `);
+        });
+
+        // Add city center marker
+        L.marker([31.456, 73.095]).addTo(map)
+            .bindPopup('<b>Faisalabad City Center</b>')
+            .openPopup();
+    </script>
+</body>
+</html>
