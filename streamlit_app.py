@@ -19,7 +19,29 @@ st.set_page_config(
 def initialize_earth_engine():
     """Initialize Earth Engine with proper error handling"""
     try:
-        if 'GCP_SERVICE_ACCOUNT' in st.secrets:
+        # Check if we're in Streamlit Cloud by looking for the mount path
+        is_streamlit_cloud = '/mount/src/' in os.getcwd()
+        
+        if 'GOOGLE_CLIENT_EMAIL' in st.secrets:
+            # Method 1: Individual fields in secrets (prioritize this method)
+            st.info("🔄 Building service account from individual fields...")
+            st.info(f"🌍 Environment: {'Streamlit Cloud' if is_streamlit_cloud else 'Local'}")
+            key_dict = {
+                "type": st.secrets["GOOGLE_TYPE"],
+                "project_id": st.secrets["GOOGLE_PROJECT_ID"],
+                "private_key_id": st.secrets["GOOGLE_PRIVATE_KEY_ID"],
+                "private_key": st.secrets["GOOGLE_PRIVATE_KEY"],
+                "client_email": st.secrets["GOOGLE_CLIENT_EMAIL"],
+                "client_id": st.secrets["GOOGLE_CLIENT_ID"],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{st.secrets['GOOGLE_CLIENT_EMAIL'].replace('@', '%40')}",
+                "universe_domain": "googleapis.com"
+            }
+            st.info("✅ Service account built from individual fields")
+            
+        elif 'GCP_SERVICE_ACCOUNT' in st.secrets:
             # Method 1: Full JSON in secrets
             st.info("🔄 Attempting to connect to Google Earth Engine...")
             
