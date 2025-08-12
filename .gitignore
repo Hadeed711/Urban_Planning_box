@@ -1,3 +1,17 @@
+# Service account and secrets
+service_account.json
+*.json
+!requirements.txt
+
+# Test and temporary files
+test_*.html
+test_service_account.py
+*_test.py
+*.pkl
+.ee_auth_cache.*
+temp/
+tmp/
+
 # Python
 __pycache__/
 *.py[cod]
