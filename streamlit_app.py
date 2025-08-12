@@ -9,6 +9,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from google.oauth2 import service_account
 
+# Required scope for Earth Engine
+EE_SCOPE = 'https://www.googleapis.com/auth/earthengine'
+
 # Configure Streamlit page
 st.set_page_config(
     page_title="Urban Heat Island Mapper & Mitigator",
@@ -58,7 +61,10 @@ def initialize_earth_engine():
             st.info("✅ Service account built from individual fields")
             
             # Initialize Earth Engine with service account credentials
-            credentials = service_account.Credentials.from_service_account_info(key_dict)
+            credentials = service_account.Credentials.from_service_account_info(
+                key_dict,
+                scopes=[EE_SCOPE]
+            )
             ee.Initialize(credentials)
             st.success("✅ Earth Engine initialized (Streamlit Cloud)")
             return True
@@ -102,7 +108,10 @@ def initialize_earth_engine():
                 key_dict['universe_domain'] = 'googleapis.com'
             
             # Initialize Earth Engine with service account credentials
-            credentials = service_account.Credentials.from_service_account_info(key_dict)
+            credentials = service_account.Credentials.from_service_account_info(
+                key_dict,
+                scopes=[EE_SCOPE]
+            )
             ee.Initialize(credentials)
             st.success("✅ Earth Engine initialized (Streamlit Cloud)")
             return True
@@ -131,7 +140,10 @@ def initialize_earth_engine():
                 key_dict = {k: v for k, v in key_dict.items() if v is not None}
                 
                 if len(key_dict) >= 5:  # Need at least basic credentials
-                    credentials = service_account.Credentials.from_service_account_info(key_dict)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        key_dict,
+                        scopes=[EE_SCOPE]
+                    )
                     ee.Initialize(credentials)
                     st.success("✅ Earth Engine initialized with manual secret construction")
                     return True
