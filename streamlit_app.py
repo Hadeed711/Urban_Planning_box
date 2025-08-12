@@ -20,10 +20,21 @@ st.set_page_config(
 def initialize_earth_engine():
     """Initialize Earth Engine with proper error handling"""
     try:
+        # Debug: Check if secrets are available
+        st.info("🔍 Debugging secrets availability...")
+        st.info(f"📱 Streamlit secrets available: {hasattr(st, 'secrets')}")
+        
+        if hasattr(st, 'secrets'):
+            st.info(f"🔑 Available secret keys: {list(st.secrets.keys())}")
+            if 'GOOGLE_CLIENT_EMAIL' in st.secrets:
+                st.info("✅ GOOGLE_CLIENT_EMAIL found in secrets")
+            else:
+                st.info("❌ GOOGLE_CLIENT_EMAIL not found in secrets")
+        
         # Check if we're in Streamlit Cloud environment
         is_streamlit_cloud = hasattr(st, 'secrets') and bool(st.secrets)
         
-        if 'GOOGLE_CLIENT_EMAIL' in st.secrets:
+        if hasattr(st, 'secrets') and 'GOOGLE_CLIENT_EMAIL' in st.secrets:
             # Method 1: Individual fields in secrets (prioritize this method)
             st.info("🔄 Building service account from individual fields...")
             st.info(f"🌍 Environment: {'Streamlit Cloud' if is_streamlit_cloud else 'Local'}")
@@ -72,8 +83,52 @@ def initialize_earth_engine():
             st.success("✅ Earth Engine initialized (Streamlit Cloud)")
             return True
             
+        # Alternative Method: Try using any Google secrets with manual construction
+        elif hasattr(st, 'secrets') and any(key.startswith('GOOGLE_') for key in st.secrets.keys()):
+            st.info("🔄 Trying alternative authentication with available Google secrets...")
+            
+            try:
+                # Manually construct service account info from any available secrets
+                key_dict = {
+                    "type": st.secrets.get("GOOGLE_TYPE", "service_account"),
+                    "project_id": st.secrets.get("GOOGLE_PROJECT_ID"),
+                    "private_key_id": st.secrets.get("GOOGLE_PRIVATE_KEY_ID"),
+                    "private_key": st.secrets.get("GOOGLE_PRIVATE_KEY"),
+                    "client_email": st.secrets.get("GOOGLE_CLIENT_EMAIL"),
+                    "client_id": st.secrets.get("GOOGLE_CLIENT_ID"),
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{st.secrets.get('GOOGLE_CLIENT_EMAIL', '').replace('@', '%40')}",
+                    "universe_domain": "googleapis.com"
+                }
+                
+                # Remove None values
+                key_dict = {k: v for k, v in key_dict.items() if v is not None}
+                
+                if len(key_dict) >= 5:  # Need at least basic credentials
+                    credentials = service_account.Credentials.from_service_account_info(key_dict)
+                    ee.Initialize(credentials)
+                    st.success("✅ Earth Engine initialized with manual secret construction")
+                    return True
+                else:
+                    st.warning("⚠️ Insufficient secret fields available")
+                    
+            except Exception as manual_error:
+                st.warning(f"⚠️ Manual construction failed: {str(manual_error)}")
+                # Continue to next method
+            
         else:
-            # Running locally
+            # Try public/default authentication first (no service account needed)
+            st.info("🔄 Trying public Earth Engine access...")
+            try:
+                ee.Initialize()
+                st.success("✅ Earth Engine initialized with public access")
+                return True
+            except Exception as public_error:
+                st.warning(f"⚠️ Public access failed: {str(public_error)}")
+            
+            # Fallback: Running locally with service account file
             st.info("🏠 Running in local environment")
             SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
             
