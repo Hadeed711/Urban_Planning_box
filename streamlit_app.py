@@ -20,21 +20,25 @@ st.set_page_config(
 def initialize_earth_engine():
     """Initialize Earth Engine with proper error handling"""
     try:
-        # Debug: Check if secrets are available
-        st.info("🔍 Debugging secrets availability...")
-        st.info(f"📱 Streamlit secrets available: {hasattr(st, 'secrets')}")
+        # Check if we're in Streamlit Cloud environment first
+        is_streamlit_cloud = False
+        secrets_available = False
         
-        if hasattr(st, 'secrets'):
-            st.info(f"🔑 Available secret keys: {list(st.secrets.keys())}")
-            if 'GOOGLE_CLIENT_EMAIL' in st.secrets:
-                st.info("✅ GOOGLE_CLIENT_EMAIL found in secrets")
+        try:
+            # Safe check for secrets availability
+            if hasattr(st, 'secrets') and st.secrets:
+                secrets_available = True
+                is_streamlit_cloud = True
+                st.info("🔍 Debugging secrets availability...")
+                st.info("📱 Streamlit secrets available: True")
+                st.info(f"🔑 Available secret keys: {list(st.secrets.keys())}")
             else:
-                st.info("❌ GOOGLE_CLIENT_EMAIL not found in secrets")
+                st.info("🏠 Running locally - checking for service account file...")
+        except Exception as secret_error:
+            st.info("🏠 Running locally - checking for service account file...")
+            secrets_available = False
         
-        # Check if we're in Streamlit Cloud environment
-        is_streamlit_cloud = hasattr(st, 'secrets') and bool(st.secrets)
-        
-        if hasattr(st, 'secrets') and 'GOOGLE_CLIENT_EMAIL' in st.secrets:
+        if secrets_available and 'GOOGLE_CLIENT_EMAIL' in st.secrets:
             # Method 1: Individual fields in secrets (prioritize this method)
             st.info("🔄 Building service account from individual fields...")
             st.info(f"🌍 Environment: {'Streamlit Cloud' if is_streamlit_cloud else 'Local'}")
@@ -59,7 +63,7 @@ def initialize_earth_engine():
             st.success("✅ Earth Engine initialized (Streamlit Cloud)")
             return True
             
-        elif 'GCP_SERVICE_ACCOUNT' in st.secrets:
+        elif secrets_available and 'GCP_SERVICE_ACCOUNT' in st.secrets:
             # Method 2: Full JSON in secrets
             st.info("🔄 Attempting to connect to Google Earth Engine...")
             
@@ -77,6 +81,26 @@ def initialize_earth_engine():
                     st.error("💡 **Fix**: Check that your GCP_SERVICE_ACCOUNT secret is valid JSON")
                     return False
             
+            # Validate required fields
+            required_fields = [
+                'type', 'project_id', 'private_key_id', 'private_key', 
+                'client_email', 'client_id', 'auth_uri', 'token_uri',
+                'auth_provider_x509_cert_url', 'client_x509_cert_url'
+            ]
+            
+            missing_fields = [field for field in required_fields if field not in key_dict]
+            
+            if missing_fields:
+                st.error("❌ **Service Account JSON is incomplete!**")
+                st.error(f"Missing fields: {', '.join(missing_fields)}")
+                st.error("💡 **Fix**: Download a fresh, complete service account JSON from Google Cloud Console")
+                st.info("📖 See GOOGLE_EARTH_ENGINE_SETUP_GUIDE.md for detailed instructions")
+                return False
+            
+            # Add missing fields with defaults if needed
+            if 'universe_domain' not in key_dict:
+                key_dict['universe_domain'] = 'googleapis.com'
+            
             # Initialize Earth Engine with service account credentials
             credentials = service_account.Credentials.from_service_account_info(key_dict)
             ee.Initialize(credentials)
@@ -84,7 +108,7 @@ def initialize_earth_engine():
             return True
             
         # Alternative Method: Try using any Google secrets with manual construction
-        elif hasattr(st, 'secrets') and any(key.startswith('GOOGLE_') for key in st.secrets.keys()):
+        elif secrets_available and any(key.startswith('GOOGLE_') for key in st.secrets.keys()):
             st.info("🔄 Trying alternative authentication with available Google secrets...")
             
             try:
