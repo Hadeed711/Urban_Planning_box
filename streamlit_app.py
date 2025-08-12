@@ -32,19 +32,13 @@ def initialize_earth_engine():
             if hasattr(st, 'secrets') and st.secrets:
                 secrets_available = True
                 is_streamlit_cloud = True
-                st.info("🔍 Debugging secrets availability...")
-                st.info("📱 Streamlit secrets available: True")
-                st.info(f"🔑 Available secret keys: {list(st.secrets.keys())}")
             else:
-                st.info("🏠 Running locally - checking for service account file...")
+                pass  # Running locally - will check for service account file
         except Exception as secret_error:
-            st.info("🏠 Running locally - checking for service account file...")
             secrets_available = False
         
         if secrets_available and 'GOOGLE_CLIENT_EMAIL' in st.secrets:
             # Method 1: Individual fields in secrets (prioritize this method)
-            st.info("🔄 Building service account from individual fields...")
-            st.info(f"🌍 Environment: {'Streamlit Cloud' if is_streamlit_cloud else 'Local'}")
             key_dict = {
                 "type": st.secrets["GOOGLE_TYPE"],
                 "project_id": st.secrets["GOOGLE_PROJECT_ID"],
@@ -58,7 +52,6 @@ def initialize_earth_engine():
                 "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{st.secrets['GOOGLE_CLIENT_EMAIL'].replace('@', '%40')}",
                 "universe_domain": "googleapis.com"
             }
-            st.info("✅ Service account built from individual fields")
             
             # Initialize Earth Engine with service account credentials
             credentials = service_account.Credentials.from_service_account_info(
@@ -66,22 +59,17 @@ def initialize_earth_engine():
                 scopes=[EE_SCOPE]
             )
             ee.Initialize(credentials)
-            st.success("✅ Earth Engine initialized (Streamlit Cloud)")
             return True
             
         elif secrets_available and 'GCP_SERVICE_ACCOUNT' in st.secrets:
             # Method 2: Full JSON in secrets
-            st.info("🔄 Attempting to connect to Google Earth Engine...")
-            
             gcp_service_account = st.secrets["GCP_SERVICE_ACCOUNT"]
             
             if isinstance(gcp_service_account, dict):
                 key_dict = gcp_service_account
-                st.info("✅ Service account loaded as dictionary")
             else:
                 try:
                     key_dict = json.loads(gcp_service_account)
-                    st.info("✅ Service account parsed from JSON string")
                 except json.JSONDecodeError as je:
                     st.error(f"❌ JSON parsing error: {str(je)}")
                     st.error("💡 **Fix**: Check that your GCP_SERVICE_ACCOUNT secret is valid JSON")
@@ -97,10 +85,9 @@ def initialize_earth_engine():
             missing_fields = [field for field in required_fields if field not in key_dict]
             
             if missing_fields:
-                st.error("❌ **Service Account JSON is incomplete!**")
+                st.error("❌ Service Account JSON is incomplete!")
                 st.error(f"Missing fields: {', '.join(missing_fields)}")
-                st.error("💡 **Fix**: Download a fresh, complete service account JSON from Google Cloud Console")
-                st.info("📖 See GOOGLE_EARTH_ENGINE_SETUP_GUIDE.md for detailed instructions")
+                st.error("💡 Download a fresh, complete service account JSON from Google Cloud Console")
                 return False
             
             # Add missing fields with defaults if needed
@@ -113,13 +100,10 @@ def initialize_earth_engine():
                 scopes=[EE_SCOPE]
             )
             ee.Initialize(credentials)
-            st.success("✅ Earth Engine initialized (Streamlit Cloud)")
             return True
             
         # Alternative Method: Try using any Google secrets with manual construction
         elif secrets_available and any(key.startswith('GOOGLE_') for key in st.secrets.keys()):
-            st.info("🔄 Trying alternative authentication with available Google secrets...")
-            
             try:
                 # Manually construct service account info from any available secrets
                 key_dict = {
@@ -145,27 +129,20 @@ def initialize_earth_engine():
                         scopes=[EE_SCOPE]
                     )
                     ee.Initialize(credentials)
-                    st.success("✅ Earth Engine initialized with manual secret construction")
                     return True
-                else:
-                    st.warning("⚠️ Insufficient secret fields available")
                     
             except Exception as manual_error:
-                st.warning(f"⚠️ Manual construction failed: {str(manual_error)}")
-                # Continue to next method
+                pass  # Continue to next method
             
         else:
             # Try public/default authentication first (no service account needed)
-            st.info("🔄 Trying public Earth Engine access...")
             try:
                 ee.Initialize()
-                st.success("✅ Earth Engine initialized with public access")
                 return True
             except Exception as public_error:
-                st.warning(f"⚠️ Public access failed: {str(public_error)}")
+                pass  # Continue to local file check
             
             # Fallback: Running locally with service account file
-            st.info("🏠 Running in local environment")
             SERVICE_ACCOUNT = 'streamlit-deploy@notional-gist-467013-r5.iam.gserviceaccount.com'
             
             # Try multiple possible paths for the service account file
@@ -180,35 +157,25 @@ def initialize_earth_engine():
             for path in possible_paths:
                 if os.path.exists(path):
                     KEY_FILE = path
-                    st.info(f"✅ Found service account file at: {path}")
                     break
             
             if not KEY_FILE:
-                st.error("❌ Service account file not found in any of these locations:")
-                for path in possible_paths:
-                    st.error(f"   - {os.path.abspath(path)}")
-                st.error("💡 **Fix**: Make sure service_account.json is in your project directory")
+                st.error("❌ Service account file not found")
+                st.error("💡 Place service_account.json in your project directory")
                 return False
                 
             credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, KEY_FILE)
             ee.Initialize(credentials)
-            st.success("✅ Earth Engine initialized (Local)")
             return True
 
     except FileNotFoundError as fe:
         st.error(f"❌ File not found: {str(fe)}")
-        st.error("💡 **Fix**: Ensure service_account.json exists in your project directory")
         return False
     except ee.EEException as ee_error:
         st.error(f"❌ Earth Engine error: {str(ee_error)}")
-        st.error("💡 **Fix**: Check that your service account is registered with Earth Engine")
         return False
     except Exception as e:
         st.error(f"❌ Earth Engine initialization failed: {str(e)}")
-        st.error("💡 **Troubleshooting Tips:**")
-        st.error("1. Check that secrets are properly set in Streamlit Cloud")
-        st.error("2. Ensure the service account has Earth Engine permissions")
-        st.error("3. Try refreshing the page or redeploying the app")
         return False
 
 # Initialize Earth Engine
