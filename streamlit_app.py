@@ -7,6 +7,7 @@ import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from google.oauth2 import service_account
 
 # Configure Streamlit page
 st.set_page_config(
@@ -19,8 +20,8 @@ st.set_page_config(
 def initialize_earth_engine():
     """Initialize Earth Engine with proper error handling"""
     try:
-        # Check if we're in Streamlit Cloud by looking for the mount path
-        is_streamlit_cloud = '/mount/src/' in os.getcwd()
+        # Check if we're in Streamlit Cloud environment
+        is_streamlit_cloud = hasattr(st, 'secrets') and bool(st.secrets)
         
         if 'GOOGLE_CLIENT_EMAIL' in st.secrets:
             # Method 1: Individual fields in secrets (prioritize this method)
@@ -41,8 +42,14 @@ def initialize_earth_engine():
             }
             st.info("✅ Service account built from individual fields")
             
+            # Initialize Earth Engine with service account credentials
+            credentials = service_account.Credentials.from_service_account_info(key_dict)
+            ee.Initialize(credentials)
+            st.success("✅ Earth Engine initialized (Streamlit Cloud)")
+            return True
+            
         elif 'GCP_SERVICE_ACCOUNT' in st.secrets:
-            # Method 1: Full JSON in secrets
+            # Method 2: Full JSON in secrets
             st.info("🔄 Attempting to connect to Google Earth Engine...")
             
             gcp_service_account = st.secrets["GCP_SERVICE_ACCOUNT"]
@@ -59,23 +66,11 @@ def initialize_earth_engine():
                     st.error("💡 **Fix**: Check that your GCP_SERVICE_ACCOUNT secret is valid JSON")
                     return False
             
-        elif 'GOOGLE_CLIENT_EMAIL' in st.secrets:
-            # Method 2: Individual fields in secrets
-            st.info("� Building service account from individual fields...")
-            key_dict = {
-                "type": st.secrets["GOOGLE_TYPE"],
-                "project_id": st.secrets["GOOGLE_PROJECT_ID"],
-                "private_key_id": st.secrets["GOOGLE_PRIVATE_KEY_ID"],
-                "private_key": st.secrets["GOOGLE_PRIVATE_KEY"],
-                "client_email": st.secrets["GOOGLE_CLIENT_EMAIL"],
-                "client_id": st.secrets["GOOGLE_CLIENT_ID"],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-                "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{st.secrets['GOOGLE_CLIENT_EMAIL'].replace('@', '%40')}",
-                "universe_domain": "googleapis.com"
-            }
-            st.info("✅ Service account built from individual fields")
+            # Initialize Earth Engine with service account credentials
+            credentials = service_account.Credentials.from_service_account_info(key_dict)
+            ee.Initialize(credentials)
+            st.success("✅ Earth Engine initialized (Streamlit Cloud)")
+            return True
             
         else:
             # Running locally
@@ -108,20 +103,6 @@ def initialize_earth_engine():
             ee.Initialize(credentials)
             st.success("✅ Earth Engine initialized (Local)")
             return True
-        
-        # For cloud deployment (both methods)
-        SERVICE_ACCOUNT = key_dict["client_email"]
-        st.info(f"📧 Using service account: {SERVICE_ACCOUNT}")
-
-        # Save to a temporary file
-        key_path = "/tmp/service_account.json"
-        with open(key_path, "w") as f:
-            json.dump(key_dict, f)
-
-        credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_path)
-        ee.Initialize(credentials)
-        st.success("✅ Earth Engine initialized (Streamlit Cloud)")
-        return True
 
     except FileNotFoundError as fe:
         st.error(f"❌ File not found: {str(fe)}")
@@ -134,10 +115,9 @@ def initialize_earth_engine():
     except Exception as e:
         st.error(f"❌ Earth Engine initialization failed: {str(e)}")
         st.error("💡 **Troubleshooting Tips:**")
-        st.error("1. Check that GCP_SERVICE_ACCOUNT is properly set in Streamlit Cloud secrets")
-        st.error("2. Ensure the JSON is properly formatted (no extra quotes or escaping)")
-        st.error("3. Verify the service account has Earth Engine permissions")
-        st.error("4. Try refreshing the page or redeploying the app")
+        st.error("1. Check that secrets are properly set in Streamlit Cloud")
+        st.error("2. Ensure the service account has Earth Engine permissions")
+        st.error("3. Try refreshing the page or redeploying the app")
         return False
 
 # Initialize Earth Engine
