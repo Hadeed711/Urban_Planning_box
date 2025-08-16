@@ -763,6 +763,71 @@ def main():
                 
                 if fig_efficiency:
                     st.plotly_chart(fig_efficiency, use_container_width=True)
+                
+                # Add Watson Assistant AI Summary
+                st.markdown("---")
+                st.subheader("🤖 AI Analysis Summary")
+                
+                try:
+                    # Check if Watson credentials are available
+                    if all(key in st.secrets for key in ["IBM_WATSON_API_KEY", "IBM_WATSON_URL", "IBM_ASSISTANT_ID"]):
+                        with st.spinner("🧠 Generating AI insights..."):
+                            # Prepare data for Watson
+                            top_interventions = recs[:5]  # Top 5 recommendations
+                            summary_data = {
+                                "location": "Selected urban area",
+                                "total_interventions": len(top_interventions),
+                                "top_interventions": [
+                                    {
+                                        "type": r["type"],
+                                        "cost_pkr": f"{r['cost']:,.0f}",
+                                        "cooling_effect": f"{r['cooling']:.1f}°C",
+                                        "efficiency": f"{r['efficiency_score']:.2f}",
+                                        "cost_per_person": f"{r['cost_per_person']:,.0f}"
+                                    }
+                                    for r in top_interventions
+                                ],
+                                "total_cost": f"{sum(r['cost'] for r in top_interventions):,.0f}",
+                                "total_cooling": f"{sum(r['cooling'] for r in top_interventions):.1f}°C"
+                            }
+                            
+                            # Create prompt for Watson
+                            prompt = f"""
+You are an urban planning AI assistant. Analyze these heat mitigation recommendations and provide insights:
+
+Location: {summary_data['location']}
+Total Interventions Analyzed: {summary_data['total_interventions']}
+
+Top Recommendations:
+{json.dumps(summary_data['top_interventions'], indent=2)}
+
+Total Investment Required: PKR {summary_data['total_cost']}
+Total Potential Cooling: {summary_data['total_cooling']}
+
+Please provide:
+1. A brief summary of the analysis
+2. The most cost-effective intervention
+3. Key insights and recommendations for implementation
+4. Any potential challenges or considerations
+
+Keep response concise and actionable for city planners.
+"""
+                            
+                            # Call Watson Assistant
+                            ai_response = call_watson_assistant(prompt)
+                            
+                            if ai_response and ai_response.strip():
+                                st.markdown("**🎯 AI Insights:**")
+                                st.info(ai_response)
+                            else:
+                                st.warning("AI assistant is processing... Please try again.")
+                                
+                    else:
+                        st.info("💡 AI insights unavailable - Watson Assistant credentials not configured")
+                        
+                except Exception as watson_error:
+                    st.warning("🤖 AI assistant temporarily unavailable")
+                    # Don't show error details to end users
     
     # Bottom section for simulation
     st.markdown("---")
