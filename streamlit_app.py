@@ -9,6 +9,83 @@ import plotly.express as px
 import plotly.graph_objects as go
 from google.oauth2 import service_account
 
+
+
+# ...existing code...
+import time
+import requests
+# ...existing code...
+
+def _get_ibm_iam_token():
+    """Get and cache IAM token for IBM Cloud (used by Watson Assistant)."""
+    if "_ibm_iam" in st.session_state:
+        cache = st.session_state["_ibm_iam"]
+        if cache.get("expires_at", 0) > time.time() + 30:
+            return cache["access_token"]
+    api_key = st.secrets.get("IBM_WATSON_API_KEY")
+    if not api_key:
+        raise RuntimeError("IBM_WATSON_API_KEY missing in st.secrets")
+    token_url = "https://iam.cloud.ibm.com/identity/token"
+    data = {"apikey": api_key, "grant_type": "urn:ibm:params:oauth:grant-type:apikey"}
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    resp = requests.post(token_url, data=data, headers=headers, timeout=10)
+    resp.raise_for_status()
+    j = resp.json()
+    access_token = j["access_token"]
+    expires_in = int(j.get("expires_in", 3600))
+    st.session_state["_ibm_iam"] = {"access_token": access_token, "expires_at": time.time() + expires_in}
+    return access_token
+
+def call_watson_assistant(text, version=None):
+    """Send `text` to IBM Watson Assistant and return assistant reply (plain text).
+    Requires these Streamlit secrets set: IBM_WATSON_API_KEY, IBM_WATSON_URL, IBM_ASSISTANT_ID
+    """
+    # Read secrets
+    base_url = st.secrets.get("IBM_WATSON_URL")
+    assistant_id = st.secrets.get("IBM_ASSISTANT_ID")
+    if not base_url or not assistant_id:
+        raise RuntimeError("IBM_WATSON_URL or IBM_ASSISTANT_ID missing in st.secrets")
+    base_url = base_url.rstrip("/")
+    version = version or st.secrets.get("IBM_WATSON_VERSION", "2021-11-27")
+    try:
+        token = _get_ibm_iam_token()
+    except Exception as e:
+        st.error("Watson IAM token error")
+        raise
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Create a session
+    sess_url = f"{base_url}/v2/assistants/{assistant_id}/sessions?version={version}"
+    r = requests.post(sess_url, headers=headers, timeout=10)
+    r.raise_for_status()
+    session_id = r.json().get("session_id")
+    if not session_id:
+        raise RuntimeError("Failed to create Watson session")
+
+    try:
+        # Send message
+        msg_url = f"{base_url}/v2/assistants/{assistant_id}/sessions/{session_id}/message?version={version}"
+        payload = {"input": {"message_type": "text", "text": text}}
+        r2 = requests.post(msg_url, headers={**headers, "Content-Type": "application/json"}, json=payload, timeout=20)
+        r2.raise_for_status()
+        out = r2.json()
+
+        # Extract plain text responses (generic dialog responses)
+        messages = []
+        for item in out.get("output", {}).get("generic", []):
+            if "text" in item:
+                messages.append(item["text"])
+        return "\n".join(messages).strip() if messages else json.dumps(out)
+
+    finally:
+        # Delete session (best-effort)
+        try:
+            del_url = f"{base_url}/v2/assistants/{assistant_id}/sessions/{session_id}?version={version}"
+            requests.delete(del_url, headers=headers, timeout=5)
+        except Exception:
+            pass
+# ...existing code...
 # Required scope for Earth Engine
 EE_SCOPE = 'https://www.googleapis.com/auth/earthengine'
 
