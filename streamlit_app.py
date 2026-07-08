@@ -1,12 +1,13 @@
 import streamlit as st
 import folium
+from folium.plugins import Fullscreen
 from streamlit_folium import st_folium
 import ee
 import os
 import json
-import pandas as pd
-import plotly.express as px
+import math
 import plotly.graph_objects as go
+from collections import Counter
 from google.oauth2 import service_account
 from datetime import date, datetime, timedelta
 
@@ -207,6 +208,73 @@ def categorize_temp(temp):
     return "Moderate Heat"
 
 
+def _haversine_m(lat1, lng1, lat2, lng2):
+    """Great-circle distance between two points in metres."""
+    r = 6371000
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def dedupe_hotspots(hotspots, min_distance_m=150):
+    """Remove duplicate/overlapping hotspots.
+
+    Two hotspots whose centroids are closer than min_distance_m are treated as
+    the same heat zone; the hotter one is kept. Results are returned hottest
+    first with ids renumbered 1..N.
+    """
+    kept = []
+    for h in sorted(hotspots, key=lambda x: -x['temp']):
+        if all(_haversine_m(h['lat'], h['lng'], k['lat'], k['lng']) >= min_distance_m for k in kept):
+            kept.append(dict(h))
+    for i, h in enumerate(kept, 1):
+        h['id'] = i
+    return kept
+
+
+def describe_sector(lat, lng):
+    """Human-readable sector name from a position inside the study area."""
+    lngs = [c[0] for c in AOI_COORDS[0]]
+    lats = [c[1] for c in AOI_COORDS[0]]
+    fy = (lat - min(lats)) / (max(lats) - min(lats))
+    fx = (lng - min(lngs)) / (max(lngs) - min(lngs))
+    ns = "North" if fy > 0.62 else ("South" if fy < 0.38 else "")
+    ew = "East" if fx > 0.62 else ("West" if fx < 0.38 else "")
+    if ns and ew:
+        return f"{ns}-{ew} Quarter"
+    if ns:
+        return f"{ns}ern Belt"
+    if ew:
+        return f"{ew}ern Corridor"
+    return "City Core"
+
+
+def name_hotspots(hotspots):
+    """Give each detected hotspot a full, unique location name based on where
+    it sits in the study area (e.g. 'North-East Quarter', 'City Core – Zone B')."""
+    sectors = [describe_sector(h['lat'], h['lng']) for h in hotspots]
+    totals = Counter(sectors)
+    seen = Counter()
+    for h, sector in zip(hotspots, sectors):
+        if totals[sector] > 1:
+            seen[sector] += 1
+            h['location'] = f"{sector} – Zone {chr(64 + seen[sector])}"
+        else:
+            h['location'] = sector
+    return hotspots
+
+
+def implementation_timeline(intervention_type):
+    """Typical implementation window for an intervention type."""
+    if intervention_type == 'Street Trees':
+        return "8-12 weeks (includes planting season)"
+    if 'Roof' in intervention_type:
+        return "6-10 weeks (weather dependent)"
+    return "4-8 weeks (standard implementation)"
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def compute_live_hotspots(start_date, end_date, z_threshold, min_area_ha=0.5, max_hotspots=15):
     """
@@ -331,9 +399,11 @@ def compute_live_hotspots(start_date, end_date, z_threshold, min_area_ha=0.5, ma
             "pop_exposed": int(props.get('pop_exposed') or 0),
             "lat": props.get('lat'),
             "lng": props.get('lng'),
-            "location": f"Detected Zone {i}",
             "category": categorize_temp(temp),
         })
+
+    # Merge near-identical detections and give each zone a real location name
+    hotspots = name_hotspots(dedupe_hotspots(hotspots))
 
     # Tile URL for the live LST overlay (a string, so it caches cleanly)
     tile_url = lst_median.getMapId({
@@ -474,81 +544,69 @@ def recommend_interventions(hotspot, budget_pkr=None):
     
     return results
 
+def _comparison_bar(names, values, texts, color, title, x_title):
+    """Single-measure horizontal bar chart: sorted, direct-labeled, recessive grid.
+
+    Backgrounds stay transparent so the chart adapts to the Streamlit theme.
+    """
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    fig = go.Figure(go.Bar(
+        y=[names[i] for i in order],
+        x=[values[i] for i in order],
+        orientation='h',
+        text=[texts[i] for i in order],
+        textposition='outside',
+        cliponaxis=False,
+        marker=dict(color=color),
+        hovertemplate='%{y}: %{text}<extra></extra>',
+    ))
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=15)),
+        height=320,
+        margin=dict(l=10, r=90, t=48, b=36),
+        bargap=0.42,
+        showlegend=False,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(title=x_title, showgrid=True, gridcolor='rgba(128,128,128,0.18)',
+                   zeroline=False, showline=False),
+        yaxis=dict(showgrid=False),
+    )
+    return fig
+
+
 def create_simple_charts(recommendations):
-    """Create simple, non-overlapping charts for analysis results"""
+    """Comparison charts for the top intervention recommendations."""
     if not recommendations:
         return None, None, None
-    
-    # Prepare data (top 5 recommendations only)
+
     top_recs = recommendations[:5]
     names = [rec['type'] for rec in top_recs]
-    costs = [rec['cost'] for rec in top_recs]
-    cooling = [rec['cooling'] for rec in top_recs]
-    efficiency = [rec['efficiency_score'] for rec in top_recs]
-    
-    # Chart 1: Cost Comparison (Bar Chart)
-    fig_cost = go.Figure()
-    fig_cost.add_trace(go.Bar(
-        x=names,
-        y=costs,
-        text=[f'PKR {cost:,}' for cost in costs],
-        textposition='outside',
-        marker_color='lightblue'
-    ))
-    fig_cost.update_layout(
-        title='💰 Investment Required (PKR)',
-        xaxis_title='Intervention Type',
-        yaxis_title='Cost (PKR)',
-        height=400
+
+    fig_cost = _comparison_bar(
+        names, [rec['cost'] for rec in top_recs],
+        [f"PKR {rec['cost']:,}" for rec in top_recs],
+        '#2a78d6', '💰 Investment Required', 'Cost (PKR)',
     )
-    
-    # Chart 2: Cooling Effectiveness (Bar Chart)
-    fig_cooling = go.Figure()
-    fig_cooling.add_trace(go.Bar(
-        x=names,
-        y=cooling,
-        text=[f'{temp}°C' for temp in cooling],
-        textposition='outside',
-        marker_color='lightcoral'
-    ))
-    fig_cooling.update_layout(
-        title='🌡️ Cooling Effectiveness',
-        xaxis_title='Intervention Type',
-        yaxis_title='Temperature Reduction (°C)',
-        height=400
+    fig_cooling = _comparison_bar(
+        names, [rec['cooling'] for rec in top_recs],
+        [f"{rec['cooling']}°C" for rec in top_recs],
+        '#1baf7a', '🌡️ Cooling Effectiveness', 'Temperature Reduction (°C)',
     )
-    
-    # Chart 3: Efficiency Comparison (Bar Chart)
-    fig_efficiency = go.Figure()
-    fig_efficiency.add_trace(go.Bar(
-        x=names,
-        y=efficiency,
-        text=[f'{eff:.3f}' for eff in efficiency],
-        textposition='outside',
-        marker_color='lightgreen'
-    ))
-    fig_efficiency.update_layout(
-        title='⚡ Efficiency Score',
-        xaxis_title='Intervention Type',
-        yaxis_title='Efficiency Score',
-        height=400
+    fig_efficiency = _comparison_bar(
+        names, [rec['efficiency_score'] for rec in top_recs],
+        [f"{rec['efficiency_score']:.3f}" for rec in top_recs],
+        '#4a3aa7', '⚡ Cooling per Lakh PKR', '°C per Lakh PKR',
     )
-    
     return fig_cost, fig_cooling, fig_efficiency
 
-def add_ee_layer(map_object, ee_image_object, vis_params, name):
-    """Add Earth Engine layer to Folium map"""
-    try:
-        map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
-        folium.raster_layers.TileLayer(
-            tiles=map_id_dict['tile_fetcher'].url_format,
-            attr='Map Data &copy; <a href="https://earthengine.google.com/">Google Earth Engine</a>',
-            name=name,
-            overlay=True,
-            control=True
-        ).add_to(map_object)
-    except Exception as e:
-        st.error(f"Error adding layer {name}: {str(e)}")
+# Marker styling per heat category: (outline, fill, radius)
+CATEGORY_STYLE = {
+    "Extreme Heat": {"color": "#a11212", "fill": "#e02b2b", "radius": 13},
+    "High Heat":    {"color": "#b45309", "fill": "#f59e0b", "radius": 11},
+    "Moderate Heat": {"color": "#a16207", "fill": "#facc15", "radius": 9},
+}
+
 
 def create_map(hotspots, lst_tile_url=None):
     """Create the main Folium map from the given hotspot list.
@@ -556,96 +614,134 @@ def create_map(hotspots, lst_tile_url=None):
     hotspots: list of dicts (live-computed or sample data)
     lst_tile_url: optional Earth Engine tile URL for the live LST overlay
     """
-    m = folium.Map(location=MAP_CENTER, zoom_start=14)
+    m = folium.Map(location=MAP_CENTER, zoom_start=15, tiles=None, control_scale=True)
+
+    # Base layers: clean light map (default) + satellite imagery
+    folium.TileLayer('CartoDB positron', name='🗺️ Light Map').add_to(m)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics',
+        name='🛰️ Satellite'
+    ).add_to(m)
 
     # Live LST raster overlay (only available after a live computation)
     if lst_tile_url:
         folium.raster_layers.TileLayer(
             tiles=lst_tile_url,
             attr='Map Data &copy; <a href="https://earthengine.google.com/">Google Earth Engine</a>',
-            name='Land Surface Temperature (°C)',
+            name='🌡️ Land Surface Temperature (°C)',
             overlay=True,
             control=True,
-            opacity=0.6
+            opacity=0.55
         ).add_to(m)
 
     # Study area boundary
     folium.Polygon(
         locations=[[lat, lng] for lng, lat in AOI_COORDS[0]],
-        color='blue', weight=2, fill=False,
-        tooltip='Study Area (AOI)'
+        color='#2563eb', weight=2.5, dash_array='6 6', fill=False,
+        tooltip='Study Area (AOI) — Faisalabad'
     ).add_to(m)
 
-    # Add temperature-coded markers
+    # Hotspot markers: colored circle + always-visible name label
     for hotspot in hotspots:
-        # Color-code by temperature category
-        if hotspot["temp"] >= 40:
-            color = 'darkred'
-            fillColor = 'red'
-            radius = 15
-            category_emoji = '🔴'
-        elif hotspot["temp"] >= 35:
-            color = 'darkorange'
-            fillColor = 'orange'
-            radius = 12
-            category_emoji = '🟠'
-        else:  # 30-35°C
-            color = 'gold'
-            fillColor = 'yellow'
-            radius = 10
-            category_emoji = '🟡'
-        
+        style = CATEGORY_STYLE[hotspot["category"]]
+        color, fill, radius = style["color"], style["fill"], style["radius"]
+
+        popup_html = f"""
+        <div style="font-family:'Segoe UI',system-ui,sans-serif; width:260px; padding:2px;">
+          <div style="background:{fill}; color:#fff; border-radius:8px 8px 0 0; padding:8px 12px;
+                      font-size:14px; font-weight:700; text-shadow:0 1px 2px rgba(0,0,0,.35);">
+            🔥 {hotspot['location']}
+          </div>
+          <div style="border:1px solid #e5e7eb; border-top:none; border-radius:0 0 8px 8px; padding:10px 12px;">
+            <table style="width:100%; font-size:13px; border-collapse:collapse;">
+              <tr><td style="padding:3px 0; color:#6b7280;">🌡️ Mean Temperature</td>
+                  <td style="text-align:right; font-weight:700; color:{color};">{hotspot['temp']}°C</td></tr>
+              <tr><td style="padding:3px 0; color:#6b7280;">📏 Area</td>
+                  <td style="text-align:right; font-weight:600;">{hotspot['area_ha']} ha</td></tr>
+              <tr><td style="padding:3px 0; color:#6b7280;">👥 Population Exposed</td>
+                  <td style="text-align:right; font-weight:600;">{hotspot['pop_exposed']:,}</td></tr>
+              <tr><td style="padding:3px 0; color:#6b7280;">⚠️ Category</td>
+                  <td style="text-align:right; font-weight:600;">{hotspot['category']}</td></tr>
+            </table>
+            <div style="margin-top:8px; font-size:11px; color:#9ca3af; font-style:italic;">
+              Select this hotspot in the analysis panel for AI recommendations
+            </div>
+          </div>
+        </div>
+        """
+
         folium.CircleMarker(
             location=[hotspot["lat"], hotspot["lng"]],
             radius=radius,
-            popup=f"""
-            <div style="width: 250px;">
-            <b>{category_emoji} Hotspot {hotspot['id']}: {hotspot['location']}</b><br><br>
-            🌡️ <b>Temperature:</b> {hotspot['temp']}°C<br>
-            📏 <b>Area:</b> {hotspot['area_ha']} hectares<br>
-            👥 <b>Population:</b> {hotspot['pop_exposed']:,}<br>
-            ⚠️ <b>Category:</b> {hotspot['category']}<br><br>
-            <i>Click 'Analyze Hotspot' in sidebar to get AI recommendations</i>
-            </div>
-            """,
-            tooltip=f"{category_emoji} {hotspot['location']}: {hotspot['temp']}°C",
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=f"{hotspot['location']} — {hotspot['temp']}°C ({hotspot['category']})",
             color=color,
             fill=True,
-            fillColor=fillColor,
-            fillOpacity=0.8,
-            weight=3
+            fillColor=fill,
+            fillOpacity=0.85,
+            weight=2.5
         ).add_to(m)
-    
-    # Add a legend
+
+        # Permanent pill label with the full hotspot name (instead of a bare dot)
+        label_html = (
+            f'<div style="position:absolute; transform:translate(-50%, -{radius + 30}px); '
+            f'white-space:nowrap; background:rgba(255,255,255,0.94); '
+            f'border:1.5px solid {color}; border-radius:12px; padding:2px 9px; '
+            f'font-family:\'Segoe UI\',system-ui,sans-serif; font-size:11.5px; font-weight:600; '
+            f'color:#1f2937; box-shadow:0 1px 4px rgba(0,0,0,0.3); pointer-events:none;">'
+            f'{hotspot["location"]} '
+            f'<span style="color:{color}; font-weight:700;">{hotspot["temp"]}°C</span>'
+            f'</div>'
+        )
+        folium.Marker(
+            location=[hotspot["lat"], hotspot["lng"]],
+            icon=folium.DivIcon(html=label_html, icon_size=(0, 0), icon_anchor=(0, 0))
+        ).add_to(m)
+
+    # Legend with real color swatches
     legend_html = '''
-    <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 200px; height: 120px; 
-                background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:14px; padding: 10px
-                ">
-    <p><b>🌡️ Temperature Categories</b></p>
-    <p>🔴 Extreme Heat (40°C+)</p>
-    <p>🟠 High Heat (35-40°C)</p>
-    <p>🟡 Moderate Heat (30-35°C)</p>
+    <div style="position: fixed; bottom: 24px; left: 12px; z-index: 9999;
+                background: rgba(255,255,255,0.95); border: 1px solid #d1d5db;
+                border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12.5px;
+                padding: 10px 14px; line-height: 1.9; color: #1f2937;">
+      <div style="font-weight: 700; margin-bottom: 2px;">🌡️ Heat Categories</div>
+      <div><span style="display:inline-block; width:12px; height:12px; border-radius:50%;
+            background:#e02b2b; border:2px solid #a11212; margin-right:7px; vertical-align:-1px;"></span>Extreme Heat (40°C+)</div>
+      <div><span style="display:inline-block; width:12px; height:12px; border-radius:50%;
+            background:#f59e0b; border:2px solid #b45309; margin-right:7px; vertical-align:-1px;"></span>High Heat (35–40°C)</div>
+      <div><span style="display:inline-block; width:12px; height:12px; border-radius:50%;
+            background:#facc15; border:2px solid #a16207; margin-right:7px; vertical-align:-1px;"></span>Moderate Heat (&lt;35°C)</div>
+      <div style="margin-top:2px; color:#6b7280;"><span style="display:inline-block; width:16px;
+            border-top:2.5px dashed #2563eb; margin-right:5px; vertical-align:3px;"></span>Study area boundary</div>
     </div>
     '''
     m.get_root().html.add_child(folium.Element(legend_html))
-    
-    # Add study area center marker
-    folium.Marker(
-        MAP_CENTER,
-        popup="Faisalabad Study Area Center",
-        tooltip="Study Area Center",
-        icon=folium.Icon(color='blue', icon='info-sign')
-    ).add_to(m)
-    
-    # Add layer control
-    folium.LayerControl().add_to(m)
-    
+
+    Fullscreen(position='topleft', title='Fullscreen', title_cancel='Exit fullscreen').add_to(m)
+    folium.LayerControl(collapsed=False).add_to(m)
+
     return m
 
 # Main Streamlit App
 def main():
+    # Light visual polish on top of the Streamlit theme
+    st.markdown("""
+    <style>
+      .block-container { padding-top: 1.6rem; }
+      div[data-testid="stMetric"] {
+          background: rgba(128, 128, 128, 0.08);
+          border: 1px solid rgba(128, 128, 128, 0.20);
+          border-radius: 10px;
+          padding: 10px 14px;
+      }
+      div[data-testid="stExpander"] details {
+          border-radius: 10px;
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
     st.title("🏙️ AI Urban Heat Island Mapper & Mitigator")
     st.markdown("### AI-Powered Heat Island Detection and Mitigation for Faisalabad, Pakistan")
     st.markdown("💰 **Currency:** Pakistani Rupees (PKR) | 🌳 **Tree Cost:** PKR 400 each")
@@ -665,7 +761,7 @@ def main():
         - **🌡️ LST:** Land Surface Temperature measured by satellites
         - **🌱 NDVI:** Normalized Difference Vegetation Index (measures plant health/density)
         - **🏢 LCZ:** Local Climate Zones (urban area classifications)
-        - **⚡ Efficiency Score:** Temperature reduction per 1000 PKR invested
+        - **⚡ Efficiency Score:** Temperature reduction (°C) per Lakh (100,000) PKR invested
         
         **🎨 Temperature Categories:**
         - 🔴 **Extreme Heat (40°C+):** Immediate intervention needed
@@ -707,6 +803,8 @@ def main():
                     result = compute_live_hotspots(start_str, end_str, z_threshold)
                     if result['hotspots']:
                         st.session_state['live_result'] = result
+                        # Old recommendations refer to the previous dataset
+                        st.session_state.pop('analysis', None)
                     else:
                         st.sidebar.warning(
                             f"Analysis ran ({result['scene_count']} scenes, mean LST "
@@ -719,13 +817,15 @@ def main():
     live_result = st.session_state.get('live_result')
     if live_result and st.sidebar.button("↩️ Reset to Sample Data", use_container_width=True):
         st.session_state.pop('live_result', None)
+        st.session_state.pop('analysis', None)
         live_result = None
 
     st.sidebar.markdown("---")
 
-    # Choose the active dataset: live satellite results or sample fallback
+    # Choose the active dataset: live satellite results or sample fallback.
+    # Both paths go through dedupe_hotspots so overlapping zones are merged.
     if live_result:
-        hotspots = live_result['hotspots']
+        hotspots = dedupe_hotspots(live_result['hotspots'])
         lst_tile_url = live_result['tile_url']
         params = live_result['params']
         st.success(
@@ -735,36 +835,27 @@ def main():
             f"{live_result['threshold_c']}°C (z > {params['z']}) | Computed: {live_result['computed_at']}"
         )
     else:
-        hotspots = SAMPLE_HOTSPOTS
+        hotspots = dedupe_hotspots(SAMPLE_HOTSPOTS)
         lst_tile_url = None
         st.info(
             "📊 **Showing sample demonstration data** — click **🔄 Recompute Hotspots** "
             "in the sidebar to run a live satellite analysis of current conditions."
         )
 
-    # Temperature category status (computed from the active dataset)
+    # Headline metrics for the active dataset
     n_extreme = sum(1 for h in hotspots if h['category'] == 'Extreme Heat')
     n_high = sum(1 for h in hotspots if h['category'] == 'High Heat')
     n_moderate = sum(1 for h in hotspots if h['category'] == 'Moderate Heat')
-    st.markdown(
-        f"🗺️ **Map Shows:** 🔴 {n_extreme} Extreme Heat zones (40°C+) | "
-        f"🟠 {n_high} High Heat zones (35-40°C) | 🟡 {n_moderate} Moderate Heat zones (<35°C)"
-    )
+    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+    mcol1.metric("🔥 Hotspots Detected", len(hotspots),
+                 help=f"🔴 {n_extreme} extreme | 🟠 {n_high} high | 🟡 {n_moderate} moderate")
+    mcol2.metric("🌡️ Hottest Zone", f"{max(h['temp'] for h in hotspots)}°C",
+                 help="Highest mean land surface temperature among detected hotspots")
+    mcol3.metric("👥 Population Exposed", f"{sum(h['pop_exposed'] for h in hotspots):,}",
+                 help="Total people living inside detected heat zones (WorldPop 2020)")
+    mcol4.metric("📏 Total Hot Area", f"{sum(h['area_ha'] for h in hotspots):.1f} ha",
+                 help="Combined area of all detected heat zones in hectares")
 
-    # Add color legend in sidebar
-    st.sidebar.markdown("**🎨 Map Legend:**")
-    st.sidebar.markdown("🔴 **Red Circles:** Extreme Heat (40°C+)")
-    st.sidebar.markdown("🟠 **Orange Circles:** High Heat (35-40°C)")
-    st.sidebar.markdown("🟡 **Yellow Circles:** Moderate Heat (30-35°C)")
-    st.sidebar.markdown("---")
-    
-    # Analysis options
-    analysis_type = st.sidebar.selectbox(
-        "🔬 Analysis Type",
-        ["Hotspot Detection", "Intervention Planning", "Cost-Benefit Analysis"],
-        help="Choose the type of analysis you want to perform"
-    )
-    
     # Temperature filter
     temp_filter = st.sidebar.selectbox(
         "🌡️ Temperature Filter",
@@ -777,27 +868,23 @@ def main():
     
     with col1:
         st.subheader("📍 Interactive Heat Map")
-        st.markdown("*Click on colored circles to see hotspot details*")
-        
+        st.markdown("*Each labeled marker is a heat zone — click one for details, or switch to the satellite base layer*")
+
         # Create and display map
         m = create_map(hotspots, lst_tile_url)
-        map_data = st_folium(m, width=700, height=500, returned_objects=["last_clicked"])
+        map_data = st_folium(m, height=560, use_container_width=True, returned_objects=["last_clicked"])
 
-        # Map status computed from the active dataset
         source_label = "live satellite analysis" if live_result else "sample data"
-        st.markdown(f"**🎯 Map Status:** ✅ {len(hotspots)} hotspots loaded ({source_label})")
-        if n_extreme:
-            st.markdown(f"- 🔴 **Red circles ({n_extreme}):** " + ", ".join(f"{h['temp']}°C" for h in hotspots if h['category'] == 'Extreme Heat'))
-        if n_high:
-            st.markdown(f"- 🟠 **Orange circles ({n_high}):** " + ", ".join(f"{h['temp']}°C" for h in hotspots if h['category'] == 'High Heat'))
-        if n_moderate:
-            st.markdown(f"- 🟡 **Yellow circles ({n_moderate}):** " + ", ".join(f"{h['temp']}°C" for h in hotspots if h['category'] == 'Moderate Heat'))
+        st.caption(
+            f"🎯 {len(hotspots)} hotspots loaded from {source_label} — "
+            f"🔴 {n_extreme} extreme · 🟠 {n_high} high · 🟡 {n_moderate} moderate"
+        )
 
         # Check if user clicked on map
         if map_data and map_data.get('last_clicked'):
             clicked_lat = map_data['last_clicked']['lat']
             clicked_lng = map_data['last_clicked']['lng']
-            st.info(f"📍 Clicked location: {clicked_lat:.4f}, {clicked_lng:.4f}")
+            st.caption(f"📍 Last clicked location: {clicked_lat:.4f}, {clicked_lng:.4f}")
     
     with col2:
         st.subheader("🔥 Hotspot Analysis")
@@ -853,73 +940,81 @@ def main():
             help="Set a maximum budget to filter intervention recommendations"
         )
         
-        # Analysis button
-        if st.button("🔍 Analyze Hotspot", type="primary"):
+        # Analysis button: snapshot the recommendations into session state so
+        # they survive Streamlit reruns (map clicks, widget changes, etc.)
+        if st.button("🔍 Analyze Hotspot", type="primary", use_container_width=True):
+            st.session_state['analysis'] = {
+                'hotspot': selected_hotspot,
+                'budget': budget_pkr,
+                'recs': recommend_interventions(selected_hotspot, budget_pkr),
+            }
+
+    # ---- AI recommendation results (full width, persistent) ----
+    analysis = st.session_state.get('analysis')
+    if analysis:
+        st.markdown("---")
+        hs = analysis['hotspot']
+        recs = analysis['recs']
+
+        header_col, clear_col = st.columns([5, 1])
+        with header_col:
             st.subheader("💡 AI Intervention Recommendations")
-            
-            # Generate recommendations
-            recs = recommend_interventions(selected_hotspot, budget_pkr)
-            
-            if not recs:
-                st.warning("No interventions fit within the selected budget. Try increasing the budget.")
-            else:
-                # Display recommendations in clean cards
-                st.subheader("💡 Recommended Interventions")
-                
-                for i, rec in enumerate(recs):
-                    with st.expander(f"#{i+1} {rec['type']} - PKR {rec['cost']:,}", expanded=(i==0)):
-                        st.write(f"**Description:** {rec['description']}")
-                        
-                        # Create columns for better layout
-                        col_a, col_b, col_c = st.columns(3)
-                        with col_a:
-                            st.write(f"**Units Required:** {rec['n_units']:,} {rec['unit']}")
-                            st.write(f"**Coverage Area:** {rec['coverage_area']:,} m²")
-                        with col_b:
-                            st.write(f"**Total Cost:** PKR {rec['cost']:,}")
-                            st.write(f"**Cost per Person:** PKR {rec['cost_per_person']:,.0f}")
-                        with col_c:
-                            st.write(f"**Cooling Effect:** {rec['cooling']}°C")
-                            st.write(f"**Beneficiaries:** {rec['pop_benefit']:,}")
-                        
-                        # Efficiency metrics with proper units
-                        st.write(f"**⚡ Efficiency:** {rec['efficiency_score']} {rec['efficiency_unit']}")
-                        
-                        # Implementation timeline
-                        if rec['type'] == 'Street Trees':
-                            timeline = "8-12 weeks (includes planting season)"
-                        elif 'Roof' in rec['type']:
-                            timeline = "6-10 weeks (weather dependent)"
-                        else:
-                            timeline = "4-8 weeks (standard implementation)"
-                        
-                        st.write(f"**⏰ Implementation Time:** {timeline}")
-                
-                # Show summary
-                total_cooling = sum(r['cooling'] for r in recs[:3])
-                total_cost = sum(r['cost'] for r in recs[:3])
-                st.success(f"🎯 **Combined Top 3 Interventions:** {total_cooling:.1f}°C cooling for PKR {total_cost:,}")
-                
-                # Add charts AFTER results
-                st.markdown("---")
-                st.subheader("📊 Analysis Charts")
-                
-                # Create and display charts (one per line)
-                fig_cost, fig_cooling, fig_efficiency = create_simple_charts(recs)
-                
-                if fig_cost:
+            budget_label = "no budget limit" if analysis['budget'] is None else f"budget PKR {analysis['budget']:,}"
+            st.markdown(
+                f"*For **{hs['location']}** — {hs['temp']}°C · {hs['area_ha']} ha · "
+                f"{hs['pop_exposed']:,} people exposed · {budget_label}*"
+            )
+        with clear_col:
+            if st.button("✖ Clear Results", use_container_width=True):
+                st.session_state.pop('analysis', None)
+                st.rerun()
+
+        if not recs:
+            st.warning("No interventions fit within the selected budget. Try increasing the budget.")
+        else:
+            for i, rec in enumerate(recs):
+                rank_badge = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else "▫️"))
+                with st.expander(f"{rank_badge} #{i+1} {rec['type']} — PKR {rec['cost']:,} · {rec['cooling']}°C cooling", expanded=(i == 0)):
+                    st.write(f"**Description:** {rec['description']}")
+
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        st.write(f"**Units Required:** {rec['n_units']:,} {rec['unit']}")
+                        st.write(f"**Coverage Area:** {rec['coverage_area']:,} m²")
+                    with col_b:
+                        st.write(f"**Total Cost:** PKR {rec['cost']:,}")
+                        st.write(f"**Cost per Person:** PKR {rec['cost_per_person']:,.0f}")
+                    with col_c:
+                        st.write(f"**Cooling Effect:** {rec['cooling']}°C")
+                        st.write(f"**Beneficiaries:** {rec['pop_benefit']:,}")
+
+                    st.write(f"**⚡ Efficiency:** {rec['efficiency_score']} {rec['efficiency_unit']}")
+                    st.write(f"**⏰ Implementation Time:** {implementation_timeline(rec['type'])}")
+
+            # Summary of the best combined package
+            total_cooling = sum(r['cooling'] for r in recs[:3])
+            total_cost = sum(r['cost'] for r in recs[:3])
+            st.success(f"🎯 **Combined Top 3 Interventions:** {total_cooling:.1f}°C cooling for PKR {total_cost:,}")
+
+            # Comparison charts
+            st.subheader("📊 Comparison Charts")
+            fig_cost, fig_cooling, fig_efficiency = create_simple_charts(recs)
+            if fig_cost:
+                tab_cost, tab_cool, tab_eff = st.tabs(["💰 Investment", "🌡️ Cooling", "⚡ Efficiency"])
+                with tab_cost:
                     st.plotly_chart(fig_cost, use_container_width=True)
-                
-                if fig_cooling:
+                with tab_cool:
                     st.plotly_chart(fig_cooling, use_container_width=True)
-                
-                if fig_efficiency:
+                with tab_eff:
                     st.plotly_chart(fig_efficiency, use_container_width=True)
-    
+
     # Bottom section for simulation
     st.markdown("---")
     st.subheader("🧪 Intervention Impact Simulator")
-    st.markdown("*Test different intervention scenarios and see projected results*")
+    st.markdown(
+        f"*Test intervention scenarios for the selected hotspot: "
+        f"**{selected_hotspot['location']}** ({selected_hotspot['temp']}°C)*"
+    )
     
     col3, col4, col5 = st.columns(3)
     
@@ -962,7 +1057,7 @@ def main():
 
         st.markdown(f"**Temperature Reduction**  \n{estimated_cooling:.2f}°C")
         st.markdown(f"**Estimated Cost**  \nPKR {estimated_cost:,.0f}")
-        st.markdown(f"**Units Required**  \n{units_needed if selected_intervention['unit'] == 'tree' else int(area_covered):,} {selected_intervention['unit']}")
+        st.markdown(f"**Units Required**  \n{units_needed:,} {selected_intervention['unit']}")
         st.markdown(f"**Cost Efficiency**  \nPKR {estimated_cost/max(estimated_cooling, 0.1):,.0f} per °C")
     
     with col5:
@@ -977,7 +1072,7 @@ def main():
             - **Original temperature:** {selected_hotspot['temp']}°C
             - **After intervention:** {selected_hotspot['temp'] - estimated_cooling:.1f}°C
             - **Population benefited:** {selected_hotspot['pop_exposed']:,}
-            - **Cost per person:** PKR {estimated_cost/selected_hotspot['pop_exposed']:.0f}
+            - **Cost per person:** PKR {estimated_cost/max(selected_hotspot['pop_exposed'], 1):,.0f}
             - **Cost per degree cooling:** PKR {estimated_cost/max(estimated_cooling, 0.1):,.0f}
             """
             st.markdown(results_text)
@@ -996,11 +1091,11 @@ def main():
                 **💡 Intervention:**
                 - Type: {intervention_type}
                 - Coverage: {coverage}% of hotspot area
-                - Units: {units_needed if selected_intervention['unit'] == 'tree' else int(area_covered):,} {selected_intervention['unit']}
-                
+                - Units: {units_needed:,} {selected_intervention['unit']}
+
                 **💰 Financial Analysis:**
                 - Total Cost: PKR {estimated_cost:,.0f}
-                - Cost per Person: PKR {estimated_cost/selected_hotspot['pop_exposed']:.0f}
+                - Cost per Person: PKR {estimated_cost/max(selected_hotspot['pop_exposed'], 1):,.0f}
                 - Cost per Degree Cooling: PKR {estimated_cost/max(estimated_cooling, 0.1):,.0f}
                 
                 **🌡️ Expected Impact:**
@@ -1014,8 +1109,8 @@ def main():
                 - District Administration
                 - Local Community Organizations
                 
-                **⏰ Implementation Timeline:** 
-                {timeline if 'timeline' in locals() else '6-12 weeks implementation'}
+                **⏰ Implementation Timeline:**
+                {implementation_timeline(intervention_type)}
                 
                 **📊 Success Metrics:**
                 - Satellite temperature monitoring
