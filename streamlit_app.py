@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import folium
 from folium.plugins import Fullscreen
 from streamlit_folium import st_folium
@@ -6,6 +7,7 @@ import ee
 import os
 import json
 import math
+import requests
 import plotly.graph_objects as go
 from collections import Counter
 from google.oauth2 import service_account
@@ -264,6 +266,53 @@ def name_hotspots(hotspots):
         else:
             h['location'] = sector
     return hotspots
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def reverse_geocode(lat, lng):
+    """Resolve the real place name (road / neighbourhood) for a coordinate
+    using OpenStreetMap Nominatim. Returns None when the service is
+    unreachable so callers can keep their fallback name."""
+    try:
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": f"{lat:.5f}", "lon": f"{lng:.5f}", "format": "jsonv2",
+                    "zoom": 16, "addressdetails": 1, "accept-language": "en"},
+            headers={"User-Agent": "UrbanHeatIslandMapper/1.0 (hadeedahmad711@gmail.com)"},
+            timeout=6,
+        )
+        if not resp.ok:
+            return None
+        addr = resp.json().get("address", {})
+        area = next((addr[k] for k in (
+            "neighbourhood", "quarter", "hamlet", "suburb", "residential",
+            "commercial", "industrial", "village", "city_district") if addr.get(k)), None)
+        road = addr.get("road")
+        parts = [p for p in (road, area) if p]
+        return ", ".join(parts) if parts else None
+    except Exception:
+        return None
+
+
+def disambiguate_locations(hotspots):
+    """Append a zone letter when several hotspots resolve to the same name."""
+    totals = Counter(h['location'] for h in hotspots)
+    seen = Counter()
+    for h in hotspots:
+        if totals[h['location']] > 1:
+            seen[h['location']] += 1
+            h['location'] = f"{h['location']} – Zone {chr(64 + seen[h['location']])}"
+    return hotspots
+
+
+def add_real_location_names(hotspots):
+    """Replace generic sector names with the actual place name at each
+    hotspot's centroid (falls back to the existing name when offline)."""
+    for h in hotspots:
+        real = reverse_geocode(round(h['lat'], 5), round(h['lng'], 5))
+        if real:
+            h['location'] = real
+    return disambiguate_locations(hotspots)
 
 
 def implementation_timeline(intervention_type):
@@ -665,7 +714,7 @@ def create_map(hotspots, lst_tile_url=None):
                   <td style="text-align:right; font-weight:600;">{hotspot['category']}</td></tr>
             </table>
             <div style="margin-top:8px; font-size:11px; color:#9ca3af; font-style:italic;">
-              Select this hotspot in the analysis panel for AI recommendations
+              Clicking this hotspot loads it in the analysis panel →
             </div>
           </div>
         </div>
@@ -739,8 +788,48 @@ def main():
       div[data-testid="stExpander"] details {
           border-radius: 10px;
       }
+      .location-card {
+          background: rgba(128, 128, 128, 0.08);
+          border: 1px solid rgba(128, 128, 128, 0.20);
+          border-radius: 10px;
+          padding: 10px 14px;
+          margin-bottom: 1rem;
+      }
+      .location-card .loc-label { font-size: 0.875rem; opacity: 0.8; margin-bottom: 2px; }
+      .location-card .loc-value {
+          font-size: 1.1rem;
+          font-weight: 600;
+          line-height: 1.35;
+          overflow-wrap: anywhere;   /* full location names wrap instead of clipping */
+      }
     </style>
     """, unsafe_allow_html=True)
+
+    # The calendar popover of st.date_input flips upward and gets clipped by
+    # the top of the viewport; pin it so it always opens BELOW the input.
+    components.html("""
+    <script>
+    const doc = window.parent.document;
+    function pinCalendarBelowInput() {
+        const input = doc.querySelector('[data-testid="stDateInput"]');
+        if (!input) return;
+        doc.querySelectorAll('div[data-baseweb="popover"]').forEach(pop => {
+            if (!pop.querySelector('[data-baseweb="calendar"]')) return;
+            const r = input.getBoundingClientRect();
+            const top = Math.round(r.bottom + 6) + 'px';
+            const left = Math.round(r.left) + 'px';
+            if (pop.style.top !== top || pop.style.left !== left || pop.style.transform !== 'none') {
+                pop.style.position = 'fixed';
+                pop.style.transform = 'none';
+                pop.style.top = top;
+                pop.style.left = left;
+            }
+        });
+    }
+    new MutationObserver(pinCalendarBelowInput)
+        .observe(doc.body, {childList: true, subtree: true, attributes: true});
+    </script>
+    """, height=0)
 
     st.title("🏙️ AI Urban Heat Island Mapper & Mitigator")
     st.markdown("### AI-Powered Heat Island Detection and Mitigation for Faisalabad, Pakistan")
@@ -842,6 +931,11 @@ def main():
             "in the sidebar to run a live satellite analysis of current conditions."
         )
 
+    # Swap generic sector names for the real place name at each hotspot
+    # (cached reverse geocoding; keeps the fallback name when offline)
+    with st.spinner("📍 Resolving location names…"):
+        hotspots = add_real_location_names(hotspots)
+
     # Headline metrics for the active dataset
     n_extreme = sum(1 for h in hotspots if h['category'] == 'Extreme Heat')
     n_high = sum(1 for h in hotspots if h['category'] == 'High Heat')
@@ -872,7 +966,8 @@ def main():
 
         # Create and display map
         m = create_map(hotspots, lst_tile_url)
-        map_data = st_folium(m, height=560, use_container_width=True, returned_objects=["last_clicked"])
+        map_data = st_folium(m, height=560, use_container_width=True,
+                             returned_objects=["last_clicked", "last_object_clicked"])
 
         source_label = "live satellite analysis" if live_result else "sample data"
         st.caption(
@@ -904,13 +999,33 @@ def main():
             st.warning("No hotspots found in selected temperature range")
             filtered_hotspots = hotspots
         
+        # Sync the selection with a hotspot clicked on the map: match the
+        # click to the nearest hotspot and drive the selectbox through its key.
+        clicked = None
+        if map_data:
+            clicked = map_data.get('last_object_clicked') or map_data.get('last_clicked')
+        if clicked and clicked != st.session_state.get('_handled_map_click'):
+            st.session_state['_handled_map_click'] = clicked
+            nearest = min(hotspots, key=lambda h: _haversine_m(clicked['lat'], clicked['lng'], h['lat'], h['lng']))
+            if _haversine_m(clicked['lat'], clicked['lng'], nearest['lat'], nearest['lng']) <= 200:
+                match = next((i for i, h in enumerate(filtered_hotspots) if h['id'] == nearest['id']), None)
+                if match is not None:
+                    st.session_state['hotspot_select'] = match
+                else:
+                    st.info(f"📍 **{nearest['location']}** is hidden by the current temperature filter.")
+
+        # Keep the stored selection valid when the filter shrinks the list
+        if st.session_state.get('hotspot_select', 0) >= len(filtered_hotspots):
+            st.session_state['hotspot_select'] = 0
+
         # Hotspot selection
         hotspot_options = [f"Hotspot {h['id']}: {h['location']} ({h['temp']}°C)" for h in filtered_hotspots]
         selected_hotspot_idx = st.selectbox(
-            "🎯 Select Hotspot for Analysis", 
-            range(len(hotspot_options)), 
+            "🎯 Select Hotspot for Analysis",
+            range(len(hotspot_options)),
             format_func=lambda x: hotspot_options[x],
-            help="Choose a specific hotspot to analyze and get intervention recommendations"
+            key='hotspot_select',
+            help="Choose a hotspot to analyze — or simply click one on the map"
         )
         
         selected_hotspot = filtered_hotspots[selected_hotspot_idx]
@@ -925,8 +1040,15 @@ def main():
         with col_info2:
             st.metric("👥 Population Exposed", f"{selected_hotspot['pop_exposed']:,}",
                      help="Number of people living in this heat-affected area")
-            st.metric("📍 Location", selected_hotspot['location'],
-                     help="Geographic area description within Faisalabad")
+            # Custom card instead of st.metric: metric values get ellipsized,
+            # this wraps so the full location name is always visible
+            st.markdown(
+                f'<div class="location-card">'
+                f'<div class="loc-label">📍 Location</div>'
+                f'<div class="loc-value">{selected_hotspot["location"]}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
         
         # Category indicator
         category_color = {"Extreme Heat": "🔴", "High Heat": "🟠", "Moderate Heat": "🟡"}
